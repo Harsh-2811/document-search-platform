@@ -1,0 +1,6 @@
+# Normalize to LF in the repo so files bind-mounted into the Linux
+# containers keep Unix line endings regardless of the host OS.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary

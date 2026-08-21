@@ -1,0 +1,18 @@
+# Phase 0 — project setup. Later phases append their own deps
+# (docling, llama-index, crewai, arize-phoenix, ragas).
+Django==6.1
+djangorestframework==3.18.0
+django-environ==0.12.0
+psycopg[binary]==3.2.9
+# 0.5.0+ required: earlier VectorExtension doesn't pass `hints` to
+# Django 6's CreateExtension and crashes on migrate.
+pgvector==0.5.0
+
+docling==2.121.0
+
+llama-index-core==0.14.24
+llama-index-embeddings-ollama==0.9.0
+llama-index-llms-ollama==0.10.1
+
+crewai==1.15.17
+crewai-tools

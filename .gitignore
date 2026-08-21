@@ -1,0 +1,43 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+venv/
+.venv/
+
+# Django
+db.sqlite3
+db.sqlite3-journal
+/static/
+/media/
+
+# Source documents & model files. The folder is tracked (via .gitkeep) so a
+# fresh clone has somewhere to drop PDFs; the PDFs themselves are not.
+# Note: `data/*` rather than `data/` — git cannot re-include a file whose
+# parent directory is excluded, so the negation below would never apply.
+data/*
+!data/.gitkeep
+*.pdf
+*.gguf
+*.bin
+*.safetensors
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.claude/settings.local.json
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

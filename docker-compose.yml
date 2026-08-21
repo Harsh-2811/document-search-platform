@@ -1,0 +1,58 @@
+services:
+  db:
+    # Ships the pgvector extension preinstalled (Phase 1 needs it).
+    image: pgvector/pgvector:pg17
+    container_name: docsearch-db
+    restart: unless-stopped
+    environment:
+      # The postgres image expects POSTGRES_*; the app speaks DB_*.
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      # Host 5433 -> container 5432. 5432 on this machine belongs to another
+      # project's Postgres; the container always listens on 5432 internally.
+      - "${DB_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Ollama deliberately runs natively on the host, not as a service here:
+  # the image bundles ~5GB of CUDA/ROCm runtimes this host cannot use (GT 710
+  # is compute capability 3.5, Ollama needs 5.0+), and C: was too tight to
+  # hold both it and the models. Models live on D: via OLLAMA_MODELS.
+
+  web:
+    build: .
+    container_name: docsearch-web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Postgres answers to its service name; Ollama runs on the host, which
+      # `extra_hosts` below makes reachable as host.docker.internal.
+      DB_HOST: db
+      DB_PORT: 5432
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    ports:
+      - "8000:8000"
+    volumes:
+      # Bind mount for dev: edits on the host reload immediately.
+      - .:/app
+      # Docling downloads its layout/table models from HuggingFace on first
+      # parse. Without this volume they live in the container's writable
+      # layer and are re-downloaded every time the container is recreated —
+      # minutes of wasted bandwidth on a slow link.
+      - hfcache:/root/.cache/huggingface
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pgdata:
+  hfcache:
