@@ -11,6 +11,7 @@ Eyeball a single PDF's parse output (A5):
 
 from __future__ import annotations
 
+import html
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -56,7 +57,11 @@ def parse_pdf(path: Path | str) -> str:
 
     converter = DocumentConverter()
     result = converter.convert(str(path))
-    return result.document.export_to_markdown()
+    # Docling emits HTML-escaped Markdown, so an ampersand in a heading arrives
+    # as "&amp;". Left alone it reaches both the LLM prompt and the cited
+    # source line in the UI verbatim - "Breakroom &amp; Supplies". Unescape
+    # once here, at the only place raw Docling output enters the pipeline.
+    return html.unescape(result.document.export_to_markdown())
 
 
 def chunk_text(

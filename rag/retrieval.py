@@ -19,6 +19,7 @@ Django, which `rag.test_django_free` enforces.
 from __future__ import annotations
 
 import html
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -40,6 +41,17 @@ CONTEXT_WINDOW = 8192
 # pays a full reload and LlamaIndex times out. Ollama's keep_alive must carry
 # a unit (e.g. "-1m"); the bare "-1" it used to accept is now a 400.
 KEEP_ALIVE = "-1m"
+
+# Number of model layers to offload to the GPU, or None to let Ollama decide.
+#
+# Set OLLAMA_NUM_GPU=0 to force CPU-only. That sounds backwards, but a GPU too
+# small to hold the model is far worse than no GPU at all: Ollama offloads only
+# the layers that fit and every token then round-trips across PCIe. Measured on
+# this machine (GeForce GT 710, 2GB, holding 23%% of llama3.2:3b), a 344-token
+# prompt took 46.5s at 7.8 tok/s; with num_gpu=0 the same prompt took 3.2s at
+# 108 tok/s, and generation went 5.2 -> 18.8 tok/s. Ten times faster on the CPU.
+_num_gpu_env = os.environ.get("OLLAMA_NUM_GPU", "").strip()
+NUM_GPU = int(_num_gpu_env) if _num_gpu_env else None
 
 
 @dataclass
@@ -74,6 +86,9 @@ def configure_llama_index() -> None:
         request_timeout=LLM_TIMEOUT_SECONDS,
         keep_alive=KEEP_ALIVE,
         context_window=CONTEXT_WINDOW,
+        # Reaches Ollama as options.num_gpu. Omitted entirely when unset so
+        # machines with a capable GPU keep Ollama's own defaults.
+        additional_kwargs=({"num_gpu": NUM_GPU} if NUM_GPU is not None else {}),
     )
 
 

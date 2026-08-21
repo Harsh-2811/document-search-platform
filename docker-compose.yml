@@ -53,6 +53,33 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  openwebui:
+    # C3 — the chat frontend. Talks to our DRF API via a custom pipe (C4).
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: docsearch-openwebui
+    restart: unless-stopped
+    ports:
+      - "${OPENWEBUI_PORT:-3000}:8080"
+    environment:
+      # No login wall: this is a local demo, and a signup screen between the
+      # reviewer and the answer helps nobody.
+      WEBUI_AUTH: "false"
+      # Lets OpenWebUI also see the host's Ollama models directly, which is
+      # handy for comparing raw model output against our RAG pipeline.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      # C3 fix: OpenWebUI otherwise downloads its own sentence-transformers
+      # model from HuggingFace at boot. That download is what filled the disk,
+      # and it is pure waste here - retrieval happens in Django, not in the UI.
+      RAG_EMBEDDING_ENGINE: "ollama"
+      RAG_EMBEDDING_MODEL: "nomic-embed-text"
+      # Hard guard so no HuggingFace fetch can happen at all.
+      HF_HUB_OFFLINE: "1"
+    volumes:
+      - openwebui:/app/backend/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 volumes:
   pgdata:
   hfcache:
+  openwebui:
