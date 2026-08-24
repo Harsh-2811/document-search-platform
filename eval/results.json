@@ -1,0 +1,64 @@
+{
+  "aggregate": {
+    "faithfulness": 1.0,
+    "answer_relevancy": 0.6779
+  },
+  "coverage": {
+    "faithfulness": "3/8",
+    "answer_relevancy": "1/8"
+  },
+  "per_question": [
+    {
+      "question": "What bulk discounts does the supplier offer?",
+      "faithfulness": 1.0,
+      "answer_relevancy": null,
+      "answer_relevancy_error": "TimeoutError"
+    },
+    {
+      "question": "What is the return policy on items?",
+      "faithfulness": 1.0,
+      "answer_relevancy": null,
+      "answer_relevancy_error": "OutputParserException"
+    },
+    {
+      "question": "How many years of experience does the candidate have?",
+      "faithfulness": null,
+      "faithfulness_error": "OutputParserException",
+      "answer_relevancy": null,
+      "answer_relevancy_error": "TimeoutError"
+    },
+    {
+      "question": "Which product category had the highest revenue share, and what was it?",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.6779
+    },
+    {
+      "question": "How were sales split across channels?",
+      "faithfulness": null,
+      "faithfulness_error": "OutputParserException",
+      "answer_relevancy": null,
+      "answer_relevancy_error": "OutputParserException"
+    },
+    {
+      "question": "Which destinations are recommended for autumn travel?",
+      "faithfulness": null,
+      "faithfulness_error": "TimeoutError",
+      "answer_relevancy": null,
+      "answer_relevancy_error": "TimeoutError"
+    },
+    {
+      "question": "What is the total built-up area of the Aspenwood Residence?",
+      "faithfulness": null,
+      "faithfulness_error": "TimeoutError",
+      "answer_relevancy": null,
+      "answer_relevancy_error": "TimeoutError"
+    },
+    {
+      "question": "Free shipping applies above what order value, and until when are prices valid?",
+      "faithfulness": null,
+      "faithfulness_error": "TimeoutError",
+      "answer_relevancy": null,
+      "answer_relevancy_error": "TimeoutError"
+    }
+  ]
+}
