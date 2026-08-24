@@ -11,6 +11,23 @@ data leaving the machine.
      Sources: product_catalog.pdf — "Breakroom & Supplies" (score 0.669)
 ```
 
+## What's implemented
+
+- **Ingestion pipeline** — Docling PDF parsing, heading-aware chunking, Ollama
+embeddings, pgvector indexing, all behind one management command.
+- **Google Drive fetch** — paste a share link, get a verified PDF in `data/`.
+- **Vector search** — Postgres 17 + pgvector with an HNSW cosine index.
+- **RAG answering** — LlamaIndex retrieval + synthesis over a custom retriever.
+- **REST API** — `POST /api/chat/` returning an answer plus its source documents.
+- **Multi-turn conversations** — prior turns resolve pronouns without an extra LLM call.
+- **Multi-agent path** — a CrewAI two-agent crew, selectable by env var.
+- **Chat frontend** — OpenWebUI with a custom Pipe, installed at DB level.
+- **Tracing** — Arize Phoenix capturing every retrieval, embedding, and LLM call.
+- **Externalized prompts** — plain files, editable without touching code.
+- **Evaluation** — a RAGAs harness with a checkpointing runner and saved results.
+
+
+
 ## How it works
 
 Two phases. **Ingestion** happens offline in a management command; **answering**
@@ -60,45 +77,146 @@ Containers reach it via `host.docker.internal`.
 | Ollama                     | `llama3.2:3b` chat, `nomic-embed-text` embeddings | `:11434` (host)    |
 | Docling                    | PDF -> Markdown                                   | in `rag/ingest.py` |
 | LlamaIndex                 | retrieval + synthesis orchestration               | `rag/retrieval.py` |
-| CrewAI                     | multi-agent path (built, off by default)          | `rag/agents.py`    |
+| CrewAI                     | multi-agent path, selectable by env var           | `rag/agents.py`    |
 | OpenWebUI                  | chat frontend                                     | `:3000`            |
 | Arize Phoenix              | LLM tracing UI                                    | `:6006`            |
-| RAGAs                      | offline evaluation                                | `eval/`            |
+
+
+---
+
+
+
+# Setup
+
+
+
+## Prerequisites
+
+
+| Requirement                    | Notes                                                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| **Docker Desktop**             | WSL2 backend on Windows. Four containers run here.                                                           |
+| **Ollama**, installed natively | **Not** a compose service — see the design note above.                                                       |
+| **~8 GB free RAM**             | The model holds ~3 GB, the Docker VM ~3.5 GB. Memory pressure kills the VM and takes all containers with it. |
+| **~15 GB free disk**           | The web image is ~4.2 GB; models are another ~3 GB.                                                          |
 
 
 
 
-## Setup
+## 1. Pull the models
 
-**Prerequisites:** Docker Desktop, and Ollama installed on the host.
+On the **host**, not in a container:
 
 ```bash
-# 1. Pull the models (on the host, not in a container)
-ollama pull llama3.2:3b
-ollama pull nomic-embed-text
+ollama pull llama3.2:3b        # chat / answer generation
+ollama pull nomic-embed-text   # embeddings, 768-dim
+```
 
-# 2. Configure
-cp .env.example .env          # then edit it — see the comments in that file
+Verify both are present:
 
-# 3. Start everything
+```bash
+ollama list
+```
+
+
+
+## 2. Make Ollama reachable from Docker
+
+**This step is required, and skipping it makes every request fail with** `503`**.**
+
+Ollama binds to `127.0.0.1` by default. Containers reach the host through the
+Docker gateway, not loopback, so a loopback-only Ollama **refuses every container
+connection** — the API then fails at its first step (embedding the question) with
+`Connection refused`.
+
+Set `OLLAMA_HOST` **persistently**, so it survives an Ollama or machine restart:
+
+```powershell
+# Windows (PowerShell) — User scope, not just this session
+[Environment]::SetEnvironmentVariable('OLLAMA_HOST','0.0.0.0','User')
+```
+
+```bash
+# Linux / macOS — add to your shell profile or systemd unit
+export OLLAMA_HOST=0.0.0.0
+```
+
+Then restart Ollama and confirm it is no longer loopback-only:
+
+```powershell
+netstat -ano | Select-String ":11434"
+# want:  TCP  0.0.0.0:11434  LISTENING
+# not:   TCP  127.0.0.1:11434  LISTENING
+```
+
+> `0.0.0.0` exposes Ollama to your whole network. That is the standard fix and is
+> fine on a trusted network; bind to the Docker gateway address specifically if
+> you need it tighter.
+
+
+
+## 3. Configure
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` — every value is documented inline there. At minimum set
+`DJANGO_SECRET_KEY` and `DB_PASSWORD`. See [Configuration](#configuration) below
+for the full reference.
+
+## 4. Start the stack
+
+```bash
 docker compose up -d
+docker compose ps          # all four should be Up; db and openwebui healthy
+```
 
-# 4. Create the schema
+
+
+## 5. Create the schema
+
+```bash
 docker compose exec web python manage.py migrate
+```
 
-# 5. Add documents and index them
+This enables the `vector` extension, creates `documents_document` and
+`documents_chunk`, and builds the HNSW index.
+
+## 6. Add documents and index them
+
+Drop PDFs into `data/`, or pull them from Drive:
+
+```bash
+docker compose exec web python manage.py fetch_drive <drive-share-url>
 docker compose exec web python manage.py ingest_docs
 ```
 
-Open **[http://localhost:3000](http://localhost:3000)**, pick **Document Search (RAG)** from the model
-dropdown, and ask a question.
+
+
+## 7. Verify
+
+```bash
+# API answers a question
+curl -s -X POST http://localhost:8000/api/chat/ \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is the return policy?"}'
+
+# end-to-end smoke test (3 questions, checks the right document ranks first)
+docker compose exec web python scripts/b3_smoketest.py
+```
+
+Then open **[http://localhost:3000](http://localhost:3000)**, pick
+**Document Search (RAG)** from the model dropdown, and ask a question.
 
 > Commands below are written as `python manage.py ...`. Run them inside the
 > container with `docker compose exec web python manage.py ...`.
 
+---
 
 
-## Commands
+
+# Commands
 
 
 
@@ -177,11 +295,25 @@ python manage.py createsuperuser         # then browse /admin to inspect chunks
 python manage.py shell
 ```
 
+---
 
 
-## API
 
+# API
 
+## Interactive documentation
+
+The full OpenAPI 3.0 specification is at [openapi.yaml](openapi.yaml), served
+live by the app:
+
+| URL                                                              | What it is                                             |
+| ---------------------------------------------------------------- | ------------------------------------------------------ |
+| **[http://localhost:8000/api/docs/](http://localhost:8000/api/docs/)**     | Swagger UI — browse the schema and send test requests. |
+
+The spec documents every request field with its validation bounds, all three
+response codes with real captured examples, and the error shapes — including the
+fact that errors inside `history` are keyed by index string rather than returned
+as an array.
 
 ### `POST /api/chat/`
 
@@ -199,12 +331,246 @@ curl -s -X POST http://localhost:8000/api/chat/ \
 | `top_k`    | int, 1–20                 | no       | Chunks to retrieve. Default 4.                                                   |
 
 
-Returns `200` with `{"answer": "...", "sources": [{filename, heading, chunk_index, score}]}`.  
+Returns `200` with `{"answer": "...", "sources": [{filename, heading, chunk_index, score}]}`.
 `400` on invalid input, `503` if generation fails.
 
+Multi-turn example — the pronoun resolves from prior turns:
+
+```bash
+curl -s -X POST http://localhost:8000/api/chat/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question":"And how many bathrooms does it have?",
+    "history":[
+      {"role":"user","content":"How many bedrooms does the home plan have?"},
+      {"role":"assistant","content":"The home plan has 3 bedrooms."}
+    ]
+  }'
+```
+
+---
 
 
-## Evaluation
+
+# Configuration
+
+Everything lives in `.env` (copy from `.env.example`, which documents each
+value). `rag/` reads `os.environ` directly and never imports Django settings, so
+a management command and a standalone script see identical configuration.
+
+### Django
+
+
+| Variable               | Default                                                | Description                                                           |
+| ---------------------- | ------------------------------------------------------ | --------------------------------------------------------------------- |
+| `DJANGO_SECRET_KEY`    | —                                                      | **Set this.** Generate a fresh one per environment.                   |
+| `DJANGO_DEBUG`         | `True`                                                 | Turn off outside local development.                                   |
+| `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1,0.0.0.0,host.docker.internal,web` | `host.docker.internal` **is required** or container calls return 400. |
+
+
+
+
+### Database
+
+
+| Variable      | Default      | Description                                                 |
+| ------------- | ------------ | ----------------------------------------------------------- |
+| `DB_NAME`     | `documentdb` | Database name.                                              |
+| `DB_USER`     | `postgres`   | Database user.                                              |
+| `DB_PASSWORD` | —            | **Set this.**                                               |
+| `DB_HOST`     | `localhost`  | Compose overrides to `db` inside the network.               |
+| `DB_PORT`     | `5433`       | Host port. The container always listens on 5432 internally. |
+
+
+
+
+### Ollama and the RAG pipeline
+
+
+| Variable                     | Default                  | Description                                                                                                              |
+| ---------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `OLLAMA_BASE_URL`            | `http://localhost:11434` | Compose overrides to `http://host.docker.internal:11434`.                                                                |
+| `OLLAMA_CHAT_MODEL`          | `llama3.2:3b`            | Model that writes answers.                                                                                               |
+| `OLLAMA_EMBED_MODEL`         | `nomic-embed-text`       | Must match what was used at ingest — querying with a different embedding model returns plausible nonsense, not an error. |
+| `EMBEDDING_DIM`              | `768`                    | Must match the embedding model and the migration.                                                                        |
+| `RAG_USE_CREW`               | `false`                  | `true` routes answering through the CrewAI crew instead of the plain engine.                                             |
+| `OLLAMA_NUM_GPU`             | unset                    | Layers to offload to the GPU. **Set to** `0` **to force CPU-only.**                                                      |
+| `PHOENIX_COLLECTOR_ENDPOINT` | `http://localhost:6006`  | Compose overrides to `http://phoenix:6006`.                                                                              |
+
+
+
+
+### Two settings that look wrong and aren't
+
+`OLLAMA_NUM_GPU=0` **is not a typo.** A GPU too small to hold the model is worse
+than no GPU: Ollama offloads only the layers that fit and every token then
+crosses PCIe. Measured here (GT 710, 2GB, holding 23% of `llama3.2:3b`), prompt
+processing ran at 7.8 tok/s; forced to CPU the same prompt ran at 108 tok/s —
+roughly ten times faster, and end-to-end answers went from ~70s to 4–11s. Leave
+it unset on a machine with a GPU that fits the whole model.
+
+`RAG_USE_CREW=false` **is also deliberate.** The crew is built and wired, but the
+plain engine is faster on CPU-only hardware. Either path returns a grounded
+answer with sources, and the crew falls back to the plain engine on any error, so
+the API always responds.
+
+### Tuning constants
+
+These live in `rag/retrieval.py` rather than `.env`, because they are properties
+of the host rather than of a deployment:
+
+
+| Constant              | Value   | Why                                                                                                    |
+| --------------------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `CONTEXT_WINDOW`      | `8192`  | `llama3.2:3b` advertises 128k; loading it there allocates an ~18GB KV cache on a 16GB host.            |
+| `KEEP_ALIVE`          | `"-1m"` | Keeps the model resident. Models live on a SATA HDD, so an eviction costs minutes to reload.           |
+| `LLM_TIMEOUT_SECONDS` | `600.0` | CPU generation is slow; a short timeout produces confusing mid-generation failures rather than a wait. |
+| `DEFAULT_TOP_K`       | `4`     | Chunks retrieved per question.                                                                         |
+
+
+
+
+### Prompts
+
+Prompts are files, editable without touching Python:
+
+```
+prompts/qa_prompt.txt     the answer-synthesis template
+prompts/agents.yaml       CrewAI agent roles, goals, backstories, tasks
+```
+
+They are read once per process (`rag/prompts.py`, `lru_cache`d), so an edit takes
+effect on the next restart:
+
+```bash
+docker compose restart web
+```
+
+---
+
+
+
+# Deployment
+
+
+
+## Services
+
+`docker-compose.yml` defines four services. Ollama runs natively on the host.
+
+
+| Service     | Container             | Port(s)        | Depends on   |
+| ----------- | --------------------- | -------------- | ------------ |
+| `db`        | `docsearch-db`        | `5433:5432`    | —            |
+| `web`       | `docsearch-web`       | `8000:8000`    | `db` healthy |
+| `openwebui` | `docsearch-openwebui` | `3000:8080`    | —            |
+| `phoenix`   | `docsearch-phoenix`   | `6006`, `4317` | —            |
+
+
+All four use `restart: unless-stopped`. `db` has a `pg_isready` healthcheck and
+`web` waits for it, so migrations never race a cold database.
+
+## Volumes
+
+
+| Volume      | Holds                                         | Losing it means              |
+| ----------- | --------------------------------------------- | ---------------------------- |
+| `pgdata`    | Postgres data — documents, chunks, embeddings | Re-ingesting everything      |
+| `openwebui` | OpenWebUI's SQLite, incl. the installed Pipe  | Reinstalling the Pipe        |
+| `phoenix`   | Collected traces                              | Losing trace history         |
+| `hfcache`   | Docling's HuggingFace models                  | Re-downloading on next parse |
+
+
+`hfcache` matters more than it looks: without it, Docling re-downloads its
+layout and table models every time the container is recreated.
+
+## Everyday operations
+
+```bash
+docker compose up -d                    # start
+docker compose down                     # stop, keep volumes
+docker compose ps                       # status
+docker compose logs -f web              # follow API logs
+docker compose restart web              # reload after a prompt or .env change
+```
+
+
+
+## Rebuilding the image
+
+Required after any change to `requirements.txt` or the `Dockerfile`:
+
+```bash
+docker compose build web
+docker compose up -d web
+```
+
+The rebuild takes roughly 15–30 minutes — the dependency tree (torch, docling,
+crewai, llama-index) is ~4.2 GB.
+
+> Install dependencies by rebuilding, **not** by `pip install` into a running
+> container. A container-level install is wiped the next time the container is
+> recreated, which reverts pinned versions silently.
+
+
+
+## Backup and restore
+
+```bash
+# Back up the vector store
+docker exec docsearch-db pg_dump -U postgres documentdb > backup.sql
+
+# Restore
+docker exec -i docsearch-db psql -U postgres documentdb < backup.sql
+```
+
+Source PDFs live in `data/` on the host and are covered by ordinary file backups.
+Embeddings can always be regenerated from them with `ingest_docs`.
+
+## Resource notes
+
+The stack is memory-sensitive. On a 16 GB host, the model (~3 GB) plus the Docker
+VM (~3.5 GB) plus a browser and an IDE is enough to exhaust RAM — and when
+Windows reclaims memory, WSL is the largest target, so the Docker VM is killed
+and every container goes down at once (all exiting `137`). If containers die
+together for no obvious reason, check free memory before anything else.
+
+Disk fills mainly through the build cache. `docker builder prune -a -f` reclaims
+it without touching any image.
+
+---
+
+
+
+# Observability
+
+Every retrieval, embedding, and LLM call is traced. Open
+**[http://localhost:6006](http://localhost:6006)** → project `document-search`
+for the span tree.
+
+A single question produces spans like:
+
+```
+retriever  ChunkRetriever._retrieve            4133ms
+chain      TokenTextSplitter.split_text           1ms
+llm        Ollama.chat                        86886ms
+chain      CompactAndRefine.synthesize        86894ms
+chain      RetrieverQueryEngine.query         91030ms
+```
+
+This is the fastest way to tell retrieval cost from generation cost — a slow
+`Ollama.chat` span is the model, a slow `ChunkRetriever` span is the database or
+the embedding call.
+
+Tracing is wired in `rag/tracing.py` and started from `DocumentsConfig.ready()`.
+It swallows its own errors by design, so an unreachable Phoenix can slow nothing
+and take nothing down.
+
+---
+
+
+
+# Evaluation
 
 ```bash
 docker exec docsearch-web python -u eval/run_ragas.py                  # generate + score
@@ -225,95 +591,43 @@ Scored with RAGAs **faithfulness** (is the answer supported by the retrieved
 text?) and **answer relevancy**, judged by the same local `llama3.2:3b` — no API
 key, no network. Results land in `eval/results.json` and `eval/RESULTS.md`.
 
-Three separate phases, because each one fails differently and all three are slow:
+**Eval set:** 8 questions across 5 documents, ground truth read from the actual
+chunks. All 8 generated answers were verified correct by hand.
+
+**Latest scores:** faithfulness **1.0** (3 of 8 scored), answer relevancy
+**0.6779** (1 of 8 scored). Every mean is written alongside its denominator,
+since a local 3b judge cannot always produce the strict JSON RAGAs requires and
+those questions are recorded as `n/a` rather than guessed at.
+
+Three separate phases, because each fails differently and all three are slow:
 
 - **Generation** is the expensive half (~10s per question on CPU).
 - **Scoring** is the fragile half — RAGAs defaults to OpenAI and has a history of
 version churn, so a config problem here must not cost the answers.
-- **Summarising** is neither, so it shouldn't require re-running the other two.
+- **Summarising** is neither, so it doesn't require re-running the other two.
 
-Scoring checkpoints to `results.json` after every question. A run interrupted at
-question 5 keeps the first four judgements rather than losing twenty minutes of
-CPU time, and `--summarize-only` will turn whatever survived into a report.
+Scoring checkpoints to `results.json` after every question, so a run interrupted
+at question 5 keeps the first four judgements, and `--summarize-only` turns
+whatever survived into a report.
 
-**Expect gaps in the scores.** `llama3.2:3b` is a weak judge: RAGAs demands
-strict JSON and a 3b model doesn't always produce it, and faithfulness
-decomposes each answer into individual claims to judge separately, so long
-questions time out. Both are limits of the judge, not of the pipeline being
-judged — every mean is reported with its denominator so a partial result can't
-read as a complete one.
-
-## Observability
-
-Every retrieval, embedding, and LLM call is traced. Open
-**[http://localhost:6006](http://localhost:6006)** → project `document-search` for the span tree.
-
-This is the fastest way to tell retrieval cost from generation cost — a slow
-`Ollama.chat` span is the model, a slow `ChunkRetriever` span is the database or
-the embedding call.
-
-## Configuration
-
-Everything lives in `.env` (copy from `.env.example`, which documents each
-value). The ones that change behaviour rather than addresses:
-
-
-| Variable             | Default            | Description                                                                                                              |
-| -------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `OLLAMA_CHAT_MODEL`  | `llama3.2:3b`      | Model that writes answers.                                                                                               |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Must match what was used at ingest — querying with a different embedding model returns plausible nonsense, not an error. |
-| `EMBEDDING_DIM`      | `768`              | Must match the embedding model and the migration.                                                                        |
-| `RAG_USE_CREW`       | `false`            | `true` routes answering through the CrewAI crew instead of the plain engine.                                             |
-| `OLLAMA_NUM_GPU`     | unset              | Layers to offload to the GPU. **Set to** `0` **to force CPU-only.**                                                      |
-
-
-`OLLAMA_NUM_GPU=0` **is not a typo.** A GPU too small to hold the model is worse
-than no GPU: Ollama offloads only the layers that fit and every token then
-crosses PCIe. Measured here (GT 710, 2GB, holding 23% of `llama3.2:3b`), prompt
-processing ran at 7.8 tok/s; forced to CPU the same prompt ran at 108 tok/s.
-Roughly ten times faster on the CPU. Leave it unset on a machine with a real GPU.
-
-`RAG_USE_CREW=false` **is also deliberate.** The crew is built and wired, but on
-this CPU host it took ~200s per question and answered "I don't know" about a
-bulk discount while holding the chunk that stated it — `llama3.2:3b` isn't a
-strong enough tool-caller to drive a multi-agent loop. It falls back to the plain
-engine on any error, so the API always returns a grounded answer. On GPU
-hardware, flip the flag and re-measure.
-
-## Troubleshooting
-
-
-| Symptom                                                      | Cause                                                                                                                                                                                                                        |
-| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Every request takes ~70s                                     | Partial GPU offload. Set `OLLAMA_NUM_GPU=0`.                                                                                                                                                                                 |
-| One request takes ~90s, then fast                            | Cold model load off the HDD. `ollama ps` returning nothing is the tell. Not a regression.                                                                                                                                    |
-| `400 DisallowedHost`                                         | `host.docker.internal` missing from `DJANGO_ALLOWED_HOSTS`.                                                                                                                                                                  |
-| Answers contain `&`                                          | Docling HTML-escapes its Markdown. Handled in `rag/ingest.py`; older rows need a backfill.                                                                                                                                   |
-| OpenWebUI stuck `unhealthy`                                  | It's downloading sentence-transformers. `RAG_EMBEDDING_ENGINE=ollama` + `HF_HUB_OFFLINE=1` prevent it.                                                                                                                       |
-| Answers cite the wrong document                              | Embedding model changed since ingest. Re-ingest.                                                                                                                                                                             |
-| `No module named 'langchain_community.chat_models.vertexai'` | ragas resolved to 0.4.x, which imports a module langchain-community 0.4 removed. `requirements.txt` pins 0.2.15 — rebuild the image rather than `pip install` into a running container, or the next `compose up` reverts it. |
+---
 
 
 
+# Troubleshooting
 
-## Layout
 
-```
-config/         Django settings, URLs
-documents/      models (Document, Chunk), DRF view, serializers, commands
-rag/            framework-agnostic pipeline — imports no Django
-  ingest.py       parse, chunk, embed
-  retrieval.py    custom pgvector retriever + LlamaIndex query engine
-  pipeline.py     the single entry point the API calls
-  agents.py       CrewAI crew (opt-in)
-  drive_download.py
-  tracing.py      Phoenix/OpenTelemetry setup
-prompts/        qa_prompt.txt, agents.yaml — editable without touching code
-eval/           RAGAs eval set + runner + results
-openwebui/      the custom Pipe that connects OpenWebUI to this API
-data/           source PDFs
-scripts/        b3_smoketest.py — quick end-to-end check
-```
-
+| Symptom                                                                                     | Cause and fix                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Every request returns `503`, logs show `Connection refused` to `host.docker.internal:11434` | Ollama is bound to loopback. Set `OLLAMA_HOST=0.0.0.0` persistently and restart Ollama. Confirm with `netstat -ano                                                                                                           |
+| All containers exit `137` at once                                                           | Host out of RAM — WSL is the largest reclaim target. Free memory, then `docker compose up -d`.                                                                                                                               |
+| Every request takes ~70s                                                                    | Partial GPU offload. Set `OLLAMA_NUM_GPU=0`.                                                                                                                                                                                 |
+| One request takes ~90s, then fast                                                           | Cold model load off the HDD. `ollama ps` returning nothing is the tell. Not a regression.                                                                                                                                    |
+| `400 DisallowedHost`                                                                        | `host.docker.internal` missing from `DJANGO_ALLOWED_HOSTS`.                                                                                                                                                                  |
+| Answers contain `&`                                                                         | Docling HTML-escapes its Markdown. Handled in `rag/ingest.py`; older rows need a backfill.                                                                                                                                   |
+| OpenWebUI stuck `unhealthy`                                                                 | It's downloading sentence-transformers. `RAG_EMBEDDING_ENGINE=ollama` + `HF_HUB_OFFLINE=1` prevent it.                                                                                                                       |
+| Answers cite the wrong document                                                             | Embedding model changed since ingest. Re-ingest.                                                                                                                                                                             |
+| `No module named 'langchain_community.chat_models.vertexai'`                                | ragas resolved to 0.4.x, which imports a module langchain-community 0.4 removed. `requirements.txt` pins 0.2.15 — rebuild the image rather than `pip install` into a running container, or the next `compose up` reverts it. |
+| Empty reply on `localhost:8000`                                                             | Docker sometimes binds the published port IPv6-only. Use `127.0.0.1` instead.                                                                                                                                                |
 
 

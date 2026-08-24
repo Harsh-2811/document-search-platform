@@ -1,0 +1,343 @@
+openapi: 3.0.3
+
+# Hand-authored rather than generated. DRF's plain `Serializer` classes carry no
+# type hints that a generator could introspect, so an auto-generated schema for
+# this API would be mostly empty objects. Written by hand it can also carry the
+# things that actually trip callers up: the latency, the 503 contract, and the
+# fact that `sources` is one entry per document rather than per chunk.
+#
+# Kept in sync by hand with documents/serializers.py. If you change a serializer,
+# change this too.
+
+info:
+  title: Document Search Platform API
+  version: "1.0.0"
+  description: |
+    Ask questions in plain English about an indexed corpus of PDFs and get an
+    answer grounded in those documents, together with the sources it came from.
+
+    Everything runs locally — retrieval against PostgreSQL + pgvector, generation
+    through a local Ollama model. No third-party API key is involved and no
+    document content leaves the host.
+
+    ## How an answer is produced
+
+    1. The question is embedded with `nomic-embed-text` (768 dimensions).
+    2. The `top_k` nearest chunks are retrieved from pgvector by cosine distance.
+    3. Those chunks — and only those chunks — are given to `llama3.2:3b`.
+    4. The answer and the documents behind it are returned.
+
+    Because the retrieved chunks are the model's only material, `sources` is a
+    genuine account of what the answer was based on.
+
+    ## Latency — read this before setting a client timeout
+
+    Answering is **synchronous and slow**: typically **4–11 seconds** warm, and
+    up to **~90 seconds** on the first request after the model has been evicted
+    from memory, since it must be reloaded from disk. With the multi-agent path
+    enabled (`RAG_USE_CREW=true`) a request can take **60 seconds or more**.
+
+    Set a client timeout of at least **120 seconds**. The reference OpenWebUI
+    pipe uses 600. There is no streaming and no polling endpoint — the
+    connection is held until the answer is complete.
+
+    ## Authentication
+
+    None. The API is unauthenticated and intended for local or trusted-network
+    deployment.
+  contact:
+    name: Project documentation
+    url: https://github.com/Harsh-2811/document-search-project
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:8000
+    description: Local development (host)
+
+tags:
+  - name: chat
+    description: Ask questions against the indexed documents.
+
+paths:
+  /api/chat/:
+    post:
+      tags: [chat]
+      summary: Ask a question about the indexed documents
+      operationId: createChatAnswer
+      description: |
+        Retrieves the most relevant chunks for the question and generates a
+        grounded answer from them.
+
+        Pass `history` to make follow-up questions work: pronouns and elliptical
+        questions ("and how many bathrooms?") resolve against prior turns. The
+        history is folded into the query inline rather than costing an extra LLM
+        call, so it is cheap — only the last few turns are used.
+
+        If the answer cannot be grounded in the retrieved chunks, the model is
+        instructed to say so rather than invent one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+            examples:
+              simple:
+                summary: A single question
+                value:
+                  question: What bulk discounts does the supplier offer?
+              followUp:
+                summary: A follow-up that depends on prior turns
+                description: |
+                  "it" resolves to the home plan, which this question never names.
+                value:
+                  question: And how many bathrooms does it have?
+                  history:
+                    - role: user
+                      content: How many bedrooms does the home plan have?
+                    - role: assistant
+                      content: The home plan has 3 bedrooms.
+              broaderRetrieval:
+                summary: Retrieve more chunks for a broad question
+                description: |
+                  Higher `top_k` widens recall but lengthens the prompt, so the
+                  answer takes longer to generate.
+                value:
+                  question: Summarise everything about shipping and returns.
+                  top_k: 8
+      responses:
+        '200':
+          description: An answer grounded in the retrieved documents.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+              examples:
+                grounded:
+                  summary: Answer with a single source document
+                  value:
+                    answer: >-
+                      The supplier offers two bulk discounts: 10% off orders over
+                      $500, and 15% off orders over $1,000.
+                    sources:
+                      - filename: product_catalog.pdf
+                        heading: Breakroom & Supplies
+                        chunk_index: 9
+                        score: 0.669
+                multipleSources:
+                  summary: Answer drawing on several documents
+                  value:
+                    answer: All items carry a 30-day return policy.
+                    sources:
+                      - filename: product_catalog.pdf
+                        heading: Ordering & Pricing Notes
+                        chunk_index: 9
+                        score: 0.6612
+                      - filename: Sales_Report.pdf
+                        heading: ""
+                        chunk_index: 3
+                        score: 0.4187
+                notFound:
+                  summary: Nothing relevant was retrieved
+                  description: |
+                    Still a 200. The pipeline succeeded; the corpus simply does
+                    not answer the question. `sources` may list the chunks that
+                    were retrieved even though they proved unhelpful.
+                  value:
+                    answer: >-
+                      I don't have enough information in the provided documents
+                      to answer that.
+                    sources: []
+        '400':
+          description: |
+            The request body failed validation. The response maps each invalid
+            field to a list of error strings — DRF's standard shape.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+              examples:
+                missingQuestion:
+                  summary: Required field absent
+                  description: |
+                    The field is `question`. Sending `message` or `prompt`
+                    instead is the most common integration mistake.
+                  value:
+                    question:
+                      - This field is required.
+                blankQuestion:
+                  summary: Empty string
+                  value:
+                    question:
+                      - This field may not be blank.
+                topKOutOfRange:
+                  summary: top_k above the maximum
+                  value:
+                    top_k:
+                      - Ensure this value is less than or equal to 20.
+                badRole:
+                  summary: Invalid role in history
+                  description: |
+                    Errors inside `history` are keyed by the offending item's
+                    index as a **string**, not returned as a positional array.
+                    Verified against the running API.
+                  value:
+                    history:
+                      "0":
+                        role:
+                          - '"bot" is not a valid choice.'
+        '503':
+          description: |
+            Answer generation failed. The usual cause is Ollama being
+            unreachable or having no model loaded; the server logs carry the
+            underlying exception.
+
+            The multi-agent path falls back to the plain engine automatically,
+            so reaching this status means both strategies failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceUnavailable'
+              example:
+                detail: Failed to generate an answer.
+
+components:
+  schemas:
+
+    ChatRequest:
+      type: object
+      required: [question]
+      additionalProperties: false
+      properties:
+        question:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: |
+            The question to answer. Surrounding whitespace is trimmed, so a
+            whitespace-only string is rejected as blank.
+          example: What is the return policy?
+        history:
+          type: array
+          default: []
+          description: |
+            Prior conversation turns, oldest first. Only the most recent few are
+            used. Omit for single-turn questions.
+          items:
+            $ref: '#/components/schemas/Message'
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 4
+          description: |
+            How many chunks to retrieve and feed to the model. Higher values
+            improve recall on broad questions and lengthen generation time.
+          example: 4
+
+    Message:
+      type: object
+      required: [role, content]
+      additionalProperties: false
+      properties:
+        role:
+          type: string
+          enum: [user, assistant, system]
+          description: Who produced this turn.
+          example: user
+        content:
+          type: string
+          description: The turn's text. May be empty.
+          example: How many bedrooms does the home plan have?
+
+    ChatResponse:
+      type: object
+      required: [answer, sources]
+      properties:
+        answer:
+          type: string
+          description: |
+            The generated answer, grounded in `sources`. Plain prose with no
+            citation markers — attribution is returned structurally instead.
+          example: >-
+            The supplier offers two bulk discounts: 10% off orders over $500,
+            and 15% off orders over $1,000.
+        sources:
+          type: array
+          description: |
+            The documents the answer drew on, best match first.
+
+            **One entry per document, not per chunk.** If two chunks from the
+            same PDF were retrieved, the document appears once, carrying the
+            details of its best-scoring chunk. May be empty when nothing
+            relevant was found.
+          items:
+            $ref: '#/components/schemas/Source'
+
+    Source:
+      type: object
+      required: [filename, heading, chunk_index, score]
+      properties:
+        filename:
+          type: string
+          description: Name of the source PDF as ingested.
+          example: product_catalog.pdf
+        heading:
+          type: string
+          description: |
+            The section heading the chunk sat under, captured at ingest. Empty
+            when the chunk had no heading above it.
+          example: Breakroom & Supplies
+        chunk_index:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            Position of the chunk within its document, starting at 0. Useful for
+            locating the passage during debugging.
+          example: 9
+        score:
+          type: number
+          format: float
+          nullable: true
+          minimum: 0
+          maximum: 1
+          description: |
+            Cosine similarity, where **higher is better** (1.0 is identical).
+            This is `1 - cosine_distance`, converted at retrieval so that
+            ordinary score thresholds behave as expected.
+
+            Treat it as a relative ranking signal, not an absolute confidence.
+            A correct answer can rest on a chunk scoring around 0.5 when the
+            question's vocabulary differs from the document's.
+          example: 0.669
+
+    ValidationError:
+      type: object
+      description: |
+        Field name to error messages.
+
+        A top-level field maps to an **array of strings**. A field inside a list
+        (`history`) maps instead to an **object keyed by the item's index as a
+        string** — `{"history": {"0": {"role": ["..."]}}}`, not a positional
+        array. Handle both shapes when parsing errors programmatically.
+      additionalProperties:
+        oneOf:
+          - type: array
+            items:
+              type: string
+          - type: object
+            additionalProperties: true
+      example:
+        question:
+          - This field is required.
+
+    ServiceUnavailable:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string
+          description: Human-readable failure summary. Details go to the server log.
+          example: Failed to generate an answer.
