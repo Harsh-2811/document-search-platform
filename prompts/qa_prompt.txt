@@ -1,0 +1,19 @@
+Answer the question using only the context below.
+
+Rules:
+- Use only the context. If it does not contain the answer, reply exactly:
+  "The documents don't cover that."
+- Quote figures, names and dates exactly as they appear.
+- Answer in plain prose — one or two sentences, or a short bullet list if the
+  answer is genuinely a list.
+- Do NOT append citations, filenames, headings, chunk numbers, "Document:",
+  "Source:" or any similar trailer. Source attribution is handled elsewhere;
+  adding it here corrupts the answer.
+
+Context:
+---------------------
+{context_str}
+---------------------
+
+Question: {query_str}
+Answer:

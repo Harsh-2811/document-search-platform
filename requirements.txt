@@ -16,3 +16,37 @@ llama-index-llms-ollama==0.10.1
 
 crewai==1.15.17
 crewai-tools
+
+# Phase 5 / D2 — tracing. `arize-phoenix-otel` wires the OTLP exporter;
+# the instrumentor patches LlamaIndex so retrieval, embedding and LLM calls
+# all emit spans without telemetry code in rag/.
+#
+# NOTE: these pull opentelemetry 1.44, while crewai 1.15.17 declares
+# opentelemetry ~=1.42. pip prints a conflict warning, but crewai, llama-index
+# and the instrumentors all import and run fine on 1.44 — verified.
+arize-phoenix-otel==0.17.1
+openinference-instrumentation-llama-index==4.4.5
+
+# D3 — loading the CrewAI agent/task prompts from prompts/agents.yaml.
+# pyyaml is already in crewai's transitive set, but pinned here so an
+# upgrade that drops it from crewai doesn't silently break prompt loading.
+PyYAML==6.0.3
+
+# Block E — evaluation. RAGAs defaults to OpenAI for both the judge LLM and
+# the embeddings; langchain-ollama lets us point it at the same local models
+# the pipeline already uses, so the eval needs no API key and no network.
+#
+# Pinned to 0.2.x deliberately. ragas 0.4.x imports
+# `langchain_community.chat_models.vertexai`, which langchain-community 0.4
+# removed — it raises ModuleNotFoundError at import, before any eval runs.
+# langchain-community is pinned alongside it for the same reason: an
+# unpinned resolve pulls 0.4 and breaks ragas 0.2.15 the same way.
+ragas==0.2.15
+langchain-community==0.3.29
+langchain-ollama
+
+# fetch_drive — already in docling's transitive set, but pinned here because
+# rag/drive_download.py imports it directly. Same reasoning as PyYAML above:
+# a dependency we `import` should not rely on another package to keep it
+# installed. This is the version already resolved in the image.
+requests==2.34.2

@@ -37,6 +37,9 @@ services:
       DB_HOST: db
       DB_PORT: 5432
       OLLAMA_BASE_URL: http://host.docker.internal:11434
+      # D2 - inside the container "localhost" is the container, so the
+      # collector must be addressed by its compose service name.
+      PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006
     ports:
       - "8000:8000"
     volumes:
@@ -79,7 +82,24 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  phoenix:
+    # D1 - Arize Phoenix: OTLP collector + trace UI for every LLM call.
+    image: arizephoenix/phoenix:latest
+    container_name: docsearch-phoenix
+    restart: unless-stopped
+    ports:
+      # 6006 serves both the browser UI and the OTLP/HTTP trace endpoint.
+      - "${PHOENIX_PORT:-6006}:6006"
+      # OTLP/gRPC, for exporters that prefer it over HTTP.
+      - "4317:4317"
+    volumes:
+      # Without this, every restart loses the traces collected so far.
+      - phoenix:/mnt/data
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+
 volumes:
   pgdata:
   hfcache:
   openwebui:
+  phoenix:

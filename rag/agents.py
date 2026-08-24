@@ -94,72 +94,53 @@ def build_crew(top_k: int = DEFAULT_TOP_K):
     """
     from crewai import Agent, Crew, Process, Task
 
+    from rag.prompts import load_agents_yaml
+
     tool, retriever = build_retrieval_tool(top_k=top_k)
     llm = _build_llm()
 
+    prompts = load_agents_yaml()
+
+    researcher_cfg = prompts["researcher"]
+    writer_cfg = prompts["writer"]
+    research_task_cfg = prompts["research_task"]
+    answer_task_cfg = prompts["answer_task"]
+
     researcher = Agent(
-        role="Document researcher",
-        goal="Find the passages in the document library that answer: {question}",
-        backstory=(
-            "You are precise and literal. You never answer from memory — you "
-            "search the library and report what the documents actually say, "
-            "quoting the relevant lines and naming their source file."
-        ),
+        role=researcher_cfg["role"],
+        goal=researcher_cfg["goal"],
+        backstory=researcher_cfg["backstory"],
         tools=[tool],
         llm=llm,
         allow_delegation=False,
         # Each iteration is a full generation on CPU; cap it hard.
-        max_iter=3,
+        max_iter=researcher_cfg["max_iter"],
         verbose=False,
     )
 
     writer = Agent(
-        role="Answer writer",
-        goal="Write a short, correct answer grounded only in the retrieved passages",
-        backstory=(
-            "You turn retrieved passages into a direct answer. You quote "
-            "figures exactly, name the source document, and if the passages "
-            "do not contain the answer you say so plainly rather than guess."
-        ),
+        role=writer_cfg["role"],
+        goal=writer_cfg["goal"],
+        backstory=writer_cfg["backstory"],
         # Given the tool as well: if the researcher's hand-off loses the
         # passages, the writer can recover instead of answering "I don't know"
         # while the correct chunk sits one call away.
         tools=[tool],
         llm=llm,
         allow_delegation=False,
-        max_iter=2,
+        max_iter=writer_cfg["max_iter"],
         verbose=False,
     )
 
     research_task = Task(
-        description=(
-            "Search the document library for information answering this "
-            "question:\n\n{question}\n\n"
-            "Call the document_search tool. Then COPY OUT the full text of "
-            "every passage it returned, word for word, along with each "
-            "passage's source filename. Do not summarise, shorten, or "
-            "interpret them — your entire job is to reproduce the retrieved "
-            "text so the next agent can read it."
-        ),
-        expected_output=(
-            "The complete verbatim text of the retrieved passages, each "
-            "preceded by its source filename."
-        ),
+        description=research_task_cfg["description"],
+        expected_output=research_task_cfg["expected_output"],
         agent=researcher,
     )
 
     answer_task = Task(
-        description=(
-            "The context above contains passages copied verbatim out of the "
-            "document library. Read them and answer this question:\n\n"
-            "{question}\n\n"
-            "The answer is almost certainly present in those passages — read "
-            "them carefully before concluding otherwise. Quote figures "
-            "exactly as they appear and name the source document. Only say "
-            "you don't know if the passages genuinely do not address the "
-            "question; if they are empty, call document_search yourself."
-        ),
-        expected_output="A short grounded answer naming its source document.",
+        description=answer_task_cfg["description"],
+        expected_output=answer_task_cfg["expected_output"],
         agent=writer,
         context=[research_task],
     )

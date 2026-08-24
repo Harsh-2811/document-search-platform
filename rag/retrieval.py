@@ -166,26 +166,9 @@ def get_retriever(top_k: int = DEFAULT_TOP_K):
     return _build_retriever_class()(top_k=top_k)
 
 
-# Kept inline for now; Block D3 moves prompts out of code into `prompts/`.
-QA_PROMPT = """Answer the question using only the context below.
-
-Rules:
-- Use only the context. If it does not contain the answer, reply exactly:
-  "The documents don't cover that."
-- Quote figures, names and dates exactly as they appear.
-- Answer in plain prose — one or two sentences, or a short bullet list if the
-  answer is genuinely a list.
-- Do NOT append citations, filenames, headings, chunk numbers, "Document:",
-  "Source:" or any similar trailer. Source attribution is handled elsewhere;
-  adding it here corrupts the answer.
-
-Context:
----------------------
-{context_str}
----------------------
-
-Question: {query_str}
-Answer:"""
+# D3 — the QA prompt lives in prompts/qa_prompt.txt. `load_qa_prompt` is
+# process-cached, so this is one disk read per process.
+from rag.prompts import load_qa_prompt
 
 
 def get_query_engine(top_k: int = DEFAULT_TOP_K):
@@ -200,7 +183,7 @@ def get_query_engine(top_k: int = DEFAULT_TOP_K):
         # "refine" would issue one call per chunk, which at ~30s per call on
         # CPU turns a 4-chunk answer into two minutes.
         response_mode="compact",
-        text_qa_template=PromptTemplate(QA_PROMPT),
+        text_qa_template=PromptTemplate(load_qa_prompt()),
     )
     return RetrieverQueryEngine(retriever=retriever, response_synthesizer=synthesizer)
 
